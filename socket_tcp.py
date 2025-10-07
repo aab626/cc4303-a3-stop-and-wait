@@ -63,8 +63,3 @@ class SocketTCP:
         s = f'{syn_str}{HEADER_SEPARATOR}{ack_str}{HEADER_SEPARATOR}'
         s = s + f'{fin_str}{HEADER_SEPARATOR}{seq_str}{HEADER_SEPARATOR}{segment.msg}'
         return s
-
-
-seg = SegmentTCP(True, False, True, 12312, "el pepe")
-x = SocketTCP.create_segment(seg)
-print(x)
