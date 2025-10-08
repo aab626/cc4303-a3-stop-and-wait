@@ -1,4 +1,5 @@
 import socket
+from socket_tcp import SocketTCP
 
 # buffer_size = 64
 # socket_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -7,6 +8,9 @@ import socket
 
 buffer_size = 16
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+server_socket.bind(('localhost', 5000))
+
+server_socket = SocketTCP()
 server_socket.bind(('localhost', 5000))
 
 msg_complete = ''
