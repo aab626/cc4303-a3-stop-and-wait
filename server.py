@@ -15,9 +15,12 @@ server_socket.bind(('localhost', 5000))
 conn_socket, conn_addr = server_socket.accept()
 
 print('handshake completed!')
-print('server socket:', server_socket)
-print('conn socket:  ', conn_socket)
-print('conn address: ', conn_addr)
+print(f'server socket      : {server_socket}')
+print(f'conn socket        : {conn_socket}')
+
+print(f'server address     : {server_socket.origin_addr}:{server_socket.origin_port}')
+print(f'conn origin address: {conn_socket.origin_addr}:{conn_socket.origin_port}')
+print(f'conn dest address  : {conn_socket.destination_addr}:{conn_socket.destination_port}')
 
 
 # msg_complete = ''

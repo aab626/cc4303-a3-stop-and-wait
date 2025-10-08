@@ -11,6 +11,11 @@ msg = msg.encode()
 client_socket = SocketTCP()
 client_socket.connect(('localhost', 5000))
 
+print('handshake completed!')
+print(f'client socket : {client_socket}')
+print(f'client address: {client_socket.origin_addr}:{client_socket.origin_port}')
+print(f'server address: {client_socket.destination_addr}:{client_socket.destination_port}')
+
 # blocks = int(math.ceil(len(msg)/SEND_BUFFER_SIZE))
 # for i in range(blocks):
 #     x0, x1 = i*SEND_BUFFER_SIZE, min((i+1)*SEND_BUFFER_SIZE, len(msg))

@@ -3,6 +3,7 @@ import re
 import random
 from enum import Enum, auto
 import sys
+import math
 
 HEADER_SEPATOR_UNIT = '|'
 HEADER_SEPARATOR = f'{HEADER_SEPATOR_UNIT*3}'
@@ -12,6 +13,8 @@ HEADER_REGEX = re.compile(
 )
 
 VALID_BOOLS_STR = ['0', '1']
+UDP_BUFFER_SIZE = 4096
+MESSAGE_MAX_PACKET_SIZE = 16
 
 class SocketState(Enum):
     DISCONNECTED = 0
@@ -150,7 +153,7 @@ class SocketTCP:
         # Wait for ACK+SYN message (with seq+1)
         waiting_ack = True
         while waiting_ack:
-            recv_message, recv_address = self.socket.recvfrom(4096)
+            recv_message, recv_address = self.socket.recvfrom(UDP_BUFFER_SIZE)
             print(f'@client.connect, recv syn+ack: {recv_message}')
             recv_segment = SegmentTCP.parse_segment(recv_message)
             
@@ -171,7 +174,7 @@ class SocketTCP:
         # Waiting for a SYN message
         waiting_syn = True
         while waiting_syn:
-            recv_message, recv_address = self.socket.recvfrom(4096)
+            recv_message, recv_address = self.socket.recvfrom(UDP_BUFFER_SIZE)
             print(f'@server.accept, recv syn: {recv_message}')
             recv_segment = SegmentTCP.parse_segment(recv_message)
 
@@ -188,7 +191,7 @@ class SocketTCP:
         # Waiting for ACK message
         waiting_ack = True
         while waiting_ack:
-            recv_message, recv_address = self.socket.recvfrom(4096)
+            recv_message, recv_address = self.socket.recvfrom(UDP_BUFFER_SIZE)
             print(f'@server.accept, recv ack: {recv_message}')
             recv_segment = SegmentTCP.parse_segment(recv_message)
 
@@ -206,12 +209,78 @@ class SocketTCP:
         return (conn_socket, recv_address)
     
 
-    def send(message: bytes) -> None:
-        pass
+    def send(self, message: bytes) -> None:
+        # Slice message into <MESSAGE_MAX_PACKET_SIZE> sized pieces
+        messages_sliced = []
+        blocks = int(math.ceil(len(message)/MESSAGE_MAX_PACKET_SIZE))
+        for i in range(blocks):
+            block_start = i*MESSAGE_MAX_PACKET_SIZE
+            block_end = min((i+1)*MESSAGE_MAX_PACKET_SIZE, len(message))
+            message_slice = message[block_start: block_end]
+            messages_sliced.append(message_slice)
 
-    def recv(buffer_size: int) -> None:
-        pass
+        # First, send the bytecount of the whole message
+        self.seq += 1
+        tcp_segment = SegmentTCP(False, False, False, self.seq, len(message))
+        message_bytes = SegmentTCP.create_segment(tcp_segment)
+        print(f'@send, sent bytecount: {message_bytes}')
+        self.socket.sendto(message_bytes, (self.destination_addr, self.destination_port))
 
+        # Then, wait for the ACK of the bytecount message
+        waiting_ack = True
+        while waiting_ack:
+            recv_message, recv_address = self.socket.recvfrom(UDP_BUFFER_SIZE)
+            print(f'"send, recv bytecount ACK: {recv_message}')
+            recv_segment = SegmentTCP.parse_segment(recv_message)
 
+            if recv_segment.ack and recv_segment.seq == self.seq + 1:
+                self.seq += 1
+                waiting_ack = False
 
+        # Start sending message slices
+        for message_slice in messages_sliced:
+            self.seq += len(message_slice)
+            tcp_segment = SegmentTCP(False, False, False, self.seq, len(message_slice))
+            message_bytes = SegmentTCP.create_segment(tcp_segment)
+            print(f'@send, sent msg: {message_bytes}')
+            self.socket.sendto(message_bytes, (self.destination_addr, self.destination_port))
 
+            # For each message sent, wait the corresponding ACK
+            waiting_ack = True
+            while waiting_ack:
+                recv_message, recv_address = self.socket.recvfrom(UDP_BUFFER_SIZE)
+                print(f'"send, recv msg ACK: {recv_message}')
+                recv_segment = SegmentTCP.parse_segment(recv_message)
+
+                if recv_segment.ack and recv_segment.seq == self.seq + len(message_slice):
+                    self.seq += len(message_slice)
+                    waiting_ack = False
+
+    def recv(self, buffer_size: int) -> None:
+        # First, wait for the bytecount message
+        waiting_bytecount = True
+        while waiting_bytecount:
+            recv_message, recv_address = self.socket.recvfrom(buffer_size)
+            print(f'@recv, recv bytecount: {recv_message}')
+            recv_segment = SegmentTCP.parse_segment(recv_message)
+
+            if recv_segment.msg.isdigit() and recv_segment.seq == self.seq + 1:
+                self.seq += 1
+                message_total_length = int(recv_segment.msg)
+                waiting_bytecount = False
+
+        # Then, start receiving messages and assembling the full message
+        message = "".encode()
+        while len(message) < message_total_length:
+            waiting_msg = True
+            while waiting_msg:
+                recv_message, recv_address = self.socket.recvfrom(buffer_size)
+                print(f'@recv, recv msg: {recv_message}')
+                recv_segment = SegmentTCP.parse_segment(recv_message)
+
+                if recv_segment.seq > self.seq:
+                    self.seq += len(recv_segment.msg)
+                    message += recv_message.msg
+
+                    # Send the corresponding ACK
+                    # TODO send ack
