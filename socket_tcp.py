@@ -7,9 +7,8 @@ import sys
 HEADER_SEPATOR_UNIT = '|'
 HEADER_SEPARATOR = f'{HEADER_SEPATOR_UNIT*3}'
 HEADER_REGEX = re.compile(
-    rf'^(.*){re.escape(HEADER_SEPARATOR)}(.*){re.escape(HEADER_SEPARATOR)}'
-    rf'(.*){re.escape(HEADER_SEPARATOR)}(.*){re.escape(HEADER_SEPARATOR)}(.*)$',
-    re.DOTALL,
+    rf'^([01])([01])([01]){re.escape(HEADER_SEPARATOR)}(\d+){re.escape(HEADER_SEPARATOR)}(.*)$',
+    re.DOTALL
 )
 
 VALID_BOOLS_STR = ['0', '1']
@@ -113,14 +112,9 @@ class SegmentTCP:
         fin_str = '1' if segment.fin else '0'
         seq_str = str(segment.seq)
 
-        s = f'{syn_str}'
-        s = s + f'{HEADER_SEPARATOR}{ack_str}'
-        s = s + f'{HEADER_SEPARATOR}{fin_str}'
-        s = s + f'{HEADER_SEPARATOR}{seq_str}'
-        s = s + f'{HEADER_SEPARATOR}{segment.msg}'
+        s = f'{syn_str}{ack_str}{fin_str}{HEADER_SEPARATOR}{seq_str}{HEADER_SEPARATOR}{segment.msg}'
         s_bytes = s.encode()
         return s_bytes
-
 
 
 
@@ -182,33 +176,41 @@ class SocketTCP:
             recv_segment = SegmentTCP.parse_segment(recv_message)
 
             if recv_segment.syn:
+                self.seq = recv_segment.seq + 1
                 waiting_syn = False
 
         # Send the SYN+ACK message
-        self.seq = recv_segment.seq + 1
         tcp_segment = SegmentTCP(True, True, False, self.seq, '')
         message_bytes = SegmentTCP.create_segment(tcp_segment)
         print(f'@server.accept, sent syn+ack: {message_bytes}')
         self.socket.sendto(message_bytes, recv_address)
 
+        # Waiting for ACK message
+        waiting_ack = True
+        while waiting_ack:
+            recv_message, recv_address = self.socket.recvfrom(4096)
+            print(f'@server.accept, recv ack: {recv_message}')
+            recv_segment = SegmentTCP.parse_segment(recv_message)
+
+            if recv_segment.ack:
+                self.seq = recv_segment.seq + 1
+                waiting_ack = False
+
         # Prepare new connection socket to use with this counterpart
         conn_socket = SocketTCP()
-        conn_socket.bind(recv_address)
+        conn_socket.destination_addr, conn_socket.destination_port = recv_address
+        conn_socket.origin_addr = self.origin_addr
+        conn_socket.origin_port = self.origin_port
+        conn_socket.seq = self.seq
+
         return (conn_socket, recv_address)
-
-
-
     
-    # def send(self, message: bytes):
-    #     self.socket.sendto(message, (self.destination_addr, self.destination_port))
 
-    
-    # def recv(self, buffer_size: int):
-    #     pass
+    def send(message: bytes) -> None:
+        pass
 
-
-
-    
+    def recv(buffer_size: int) -> None:
+        pass
 
 
 
