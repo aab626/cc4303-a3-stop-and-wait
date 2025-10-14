@@ -15,3 +15,7 @@ print()
 print(f'Sending message: {msg.decode()}')
 print()
 client_socket.send(msg)
+
+print()
+print('Closing client connection...')
+client_socket.close()

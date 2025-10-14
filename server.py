@@ -24,3 +24,8 @@ while conn_socket.expected_total_bytes is None or len(conn_socket.current_messag
 print()
 print('Final message:')
 print(conn_socket.current_message)
+
+print()
+print('Closing connection...')
+conn_socket.recv_close()
+server_socket.socket.close()
