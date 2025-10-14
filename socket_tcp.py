@@ -1,286 +1,248 @@
 import socket
-import re
 import random
-from enum import Enum, auto
-import sys
 import math
 
-HEADER_SEPATOR_UNIT = '|'
-HEADER_SEPARATOR = f'{HEADER_SEPATOR_UNIT*3}'
-HEADER_REGEX = re.compile(
-    rf'^([01])([01])([01]){re.escape(HEADER_SEPARATOR)}(\d+){re.escape(HEADER_SEPARATOR)}(.*)$',
-    re.DOTALL
-)
+from segment_tcp import SegmentTCP
 
-VALID_BOOLS_STR = ['0', '1']
+
 UDP_BUFFER_SIZE = 4096
 MESSAGE_MAX_PACKET_SIZE = 16
-
-class SocketState(Enum):
-    DISCONNECTED = 0
-    CLIENT_SENT_SYN = auto()
-
-    HANDSHAKE_SENT_SYN_WAITING_FOR_ACKSYN = auto()
-    HANDSHAKE_SENT_ACKSYN_WAITING_FOR_ACK = auto()
-
-
-
-
-
-
-
-
-
-
-class SegmentTCP:
-    def __init__(self, syn:bool, ack:bool, fin:bool, seq:int, msg:str):
-        if not isinstance(syn, bool):
-            raise TypeError(f"Error: syn must be bool, got {type(syn).__name__}")
-        if not isinstance(ack, bool):
-            raise TypeError(f"Error: ack must be bool, got {type(ack).__name__}")
-        if not isinstance(fin, bool):
-            raise TypeError(f"Error: fin must be bool, got {type(fin).__name__}")
-        if not isinstance(seq, int):
-            raise TypeError(f"Error: seq must be int, got {type(seq).__name__}")
-        if not isinstance(msg, str):
-            raise TypeError(f"Error: msg must be str, got {type(msg).__name__}")
-        
-        self.syn = syn
-        self.ack = ack
-        self.fin = fin
-        self.seq = seq
-        self.msg = msg
-
-    def __str__(self):
-        return f'<SegmentTCP> [syn:{self.syn}, ack:{self.ack}, fin:{self.fin}, seq:{self.seq}, msg:{self.msg}]'
-    
-    def __repr__(self):
-        return str(self)
-
-    @staticmethod
-    def parse_segment(tcp_message: bytes) -> 'SegmentTCP':
-        tcp_message_s = tcp_message.decode()
-        re_groups = HEADER_REGEX.match(tcp_message_s).groups()
-
-        if len(re_groups) != 5:
-            print(
-                f'Invalid TCP segment:\n{tcp_message_s}\nExpected 5 groups, got {len(re_groups)}')
-            sys.exit(1)
-
-        syn, ack, fin, seq, msg = re_groups
-
-        # Type conversion and checking
-        errors_found = []
-        try:
-            assert syn in VALID_BOOLS_STR
-            syn = bool(int(syn))
-        except Exception as e:
-            errors_found.append(f'<{e}> Could not transform syn: {syn}')
-
-        try:
-            assert ack in VALID_BOOLS_STR
-            ack = bool(int(ack))
-        except Exception as e:
-            errors_found.append(f'<{e}> Could not transform syn: {ack}')
-
-        try:
-            assert fin in VALID_BOOLS_STR
-            fin = bool(int(fin))
-        except Exception as e:
-            errors_found.append(f'<{e}> Could not transform syn: {fin}')
-
-        try:
-            assert seq.isdigit()
-            seq = int(seq)
-        except Exception as e:
-            errors_found.append(f'<{e}> Could not transform seq: {seq}')
-
-        # Inform errors if any
-        if len(errors_found) > 0:
-            print(f"Error parsing TCP Segment: {tcp_message.decode()}")
-            for error in errors_found:
-                print(f'\t{error}')
-            
-            sys.exit(1)
-
-        # All checks passed -> return tcp segment
-        segment = SegmentTCP(syn, ack, fin, seq, msg)
-        return segment
-
-
-    @staticmethod
-    def create_segment(segment: 'SegmentTCP') -> bytes:
-        syn_str = '1' if segment.syn else '0'
-        ack_str = '1' if segment.ack else '0'
-        fin_str = '1' if segment.fin else '0'
-        seq_str = str(segment.seq)
-
-        s = f'{syn_str}{ack_str}{fin_str}{HEADER_SEPARATOR}{seq_str}{HEADER_SEPARATOR}{segment.msg}'
-        s_bytes = s.encode()
-        return s_bytes
-
+SEGMENT_TIMEOUT_SECONDS = 3.0
 
 
 class SocketTCP:
     def __init__(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.settimeout(SEGMENT_TIMEOUT_SECONDS)
         self.destination_addr = None
         self.destination_port = None
         self.origin_addr = None
         self.origin_port = None
         self.seq = None
         
-        self.state = SocketState.DISCONNECTED
-
+        self.current_message = ''
+        self.expected_total_bytes = None
+        self.recv_buffer = bytearray()
+        self.bytes_received_in_message = 0
 
     # Only for servers
     def bind(self, address: tuple[str, int]) -> None:
         self.origin_addr, self.origin_port = address
         self.socket.bind((self.origin_addr, self.origin_port))
 
-
     # Client calls this to initiate handshake
     def connect(self, address: tuple[str, int]) -> None:
         self.seq = random.randint(0, 100)
         self.destination_addr, self.destination_port = address
+        print(f'[{self.seq}] @connect, set seq')
 
-        # Send SYN message
+        # Send SYN, seq=x
         tcp_segment = SegmentTCP(True, False, False, self.seq, '')
-        message_bytes = SegmentTCP.create_segment(tcp_segment)
-        print(f'@client.connect, sent syn: {message_bytes}')
-        self.socket.sendto(message_bytes, (self.destination_addr, self.destination_port))
+        print(f'[{self.seq}] @connect, send SYN')
+        self._send_segment(tcp_segment)
 
-        # Wait for ACK+SYN message (with seq+1)
-        waiting_ack = True
-        while waiting_ack:
-            recv_message, recv_address = self.socket.recvfrom(UDP_BUFFER_SIZE)
-            print(f'@client.connect, recv syn+ack: {recv_message}')
-            recv_segment = SegmentTCP.parse_segment(recv_message)
-            
-            if recv_segment.ack and recv_segment.syn and recv_segment.seq == self.seq + 1:
-                self.seq = self.seq + 1
-                waiting_ack = False
-
-        # Send the ACK message
+        # Wait ACK+SYN, seq=x+1
+        print(f'[{self.seq}] @connect, wait ACK+SYN...')
+        while True:
+            try:
+                recv_segment, recv_address = self._wait_message(
+                    f_condition=lambda sock, rseg: rseg.ack and rseg.syn and rseg.seq == sock.seq + 1,
+                    f_update_seq=lambda sock, rseg: rseg.seq
+                )
+                break
+            except socket.timeout:
+                print(f'[{self.seq}] @connect, timeout waiting SYN-ACK, resending SYN')
+                self._send_segment(tcp_segment)
+        self.destination_addr, self.destination_port = recv_address
+        if self.origin_addr is None or self.origin_port is None:
+            self.origin_addr, self.origin_port = self.socket.getsockname()
+        
+        # Send ACK
         self.seq += 1
         tcp_segment = SegmentTCP(False, True, False, self.seq, '')
-        message_bytes = SegmentTCP.create_segment(tcp_segment)
-        print(f'@client.connect, sent ack: {message_bytes}')
-        self.socket.sendto(message_bytes, (self.destination_addr, self.destination_port))
+        print(f'[{self.seq}] @connect, send ACK')
+        self._send_segment(tcp_segment)
 
+        print(f'[{self.seq}] @connect, handshake completed!')
 
     # Server calls this to respond to a client-initiated handshake
     def accept(self) -> 'tuple[SocketTCP, tuple[str, int]]':
-        # Waiting for a SYN message
-        waiting_syn = True
-        while waiting_syn:
-            recv_message, recv_address = self.socket.recvfrom(UDP_BUFFER_SIZE)
-            print(f'@server.accept, recv syn: {recv_message}')
-            recv_segment = SegmentTCP.parse_segment(recv_message)
+        # Wait SYN, will set seq=x
+        print(f'[{self.seq}] @accept, wait SYN...')
+        while True:
+            try:
+                recv_segment, recv_address = self._wait_message(
+                    f_condition=lambda sock, rseg: rseg.syn,
+                    f_update_seq=lambda sock, rseg: sock.seq
+                )
+                break
+            except socket.timeout:
+                # Continue listening for new SYNs
+                print(f'[{self.seq}] @accept, timeout waiting SYN, continuing')
+                continue
 
-            if recv_segment.syn:
-                self.seq = recv_segment.seq + 1
-                waiting_syn = False
-
-        # Send the SYN+ACK message
-        tcp_segment = SegmentTCP(True, True, False, self.seq, '')
-        message_bytes = SegmentTCP.create_segment(tcp_segment)
-        print(f'@server.accept, sent syn+ack: {message_bytes}')
-        self.socket.sendto(message_bytes, recv_address)
-
-        # Waiting for ACK message
-        waiting_ack = True
-        while waiting_ack:
-            recv_message, recv_address = self.socket.recvfrom(UDP_BUFFER_SIZE)
-            print(f'@server.accept, recv ack: {recv_message}')
-            recv_segment = SegmentTCP.parse_segment(recv_message)
-
-            if recv_segment.ack:
-                self.seq = recv_segment.seq + 1
-                waiting_ack = False
-
-        # Prepare new connection socket to use with this counterpart
         conn_socket = SocketTCP()
         conn_socket.destination_addr, conn_socket.destination_port = recv_address
-        conn_socket.origin_addr = self.origin_addr
-        conn_socket.origin_port = self.origin_port
-        conn_socket.seq = self.seq
+        local_bind_addr = self.origin_addr if self.origin_addr is not None else ''
+        conn_socket.socket.bind((local_bind_addr, 0))
+        conn_socket.origin_addr, conn_socket.origin_port = conn_socket.socket.getsockname()
+        conn_socket.seq = recv_segment.seq
 
-        return (conn_socket, recv_address)
+        # Send ACK+SYN, seq=x+1
+        conn_socket.seq += 1
+        tcp_segment = SegmentTCP(True, True, False, conn_socket.seq, '')
+        print(f'[{conn_socket.seq}] @accept(conn), send ACK+SYN')
+        conn_socket._send_segment(tcp_segment)
+
+        # Wait ACK
+        print(f'[{conn_socket.seq}] @accept(conn), wait ACK...')
+        while True:
+            try:
+                conn_socket._wait_message(
+                    f_condition=lambda sock, rseg: rseg.ack and rseg.seq == sock.seq + 1,
+                    f_update_seq=lambda sock, rseg: rseg.seq
+                )
+                break
+            except socket.timeout:
+                print(f'[{conn_socket.seq}] @accept(conn), timeout waiting ACK, resending SYN-ACK')
+                conn_socket._send_segment(tcp_segment)
+
+        print(f'[{conn_socket.seq}] @accept(conn), handshake completed!')
+
+        return (conn_socket, (conn_socket.origin_addr, conn_socket.origin_port))
     
-
     def send(self, message: bytes) -> None:
+        if isinstance(message, str):
+            message = message.encode()
+        elif isinstance(message, bytearray):
+            message = bytes(message)
+        elif not isinstance(message, (bytes, bytearray)):
+            raise TypeError(f'Error: Unsupported message type: {type(message).__name__}')
+
+        message_length = len(message)
+
         # Slice message into <MESSAGE_MAX_PACKET_SIZE> sized pieces
-        messages_sliced = []
-        blocks = int(math.ceil(len(message)/MESSAGE_MAX_PACKET_SIZE))
-        for i in range(blocks):
-            block_start = i*MESSAGE_MAX_PACKET_SIZE
-            block_end = min((i+1)*MESSAGE_MAX_PACKET_SIZE, len(message))
-            message_slice = message[block_start: block_end]
-            messages_sliced.append(message_slice)
+        messages_sliced = [
+            message[i:i + MESSAGE_MAX_PACKET_SIZE]
+            for i in range(0, message_length, MESSAGE_MAX_PACKET_SIZE)
+        ]
 
         # First, send the bytecount of the whole message
         self.seq += 1
-        tcp_segment = SegmentTCP(False, False, False, self.seq, len(message))
+        tcp_segment = SegmentTCP(False, False, False, self.seq, message_length)
+        print(f'[{self.seq}] @send, send BYTECOUNT')
+        self._send_segment(tcp_segment)
+
+        # Wait bytecount ACK
+        print(f'[{self.seq}] @send, wait BYTECOUNT ACK...')
+        while True:
+            try:
+                self._wait_message(
+                    f_condition=lambda sock, rseg: rseg.ack and rseg.seq == sock.seq + 1,
+                    f_update_seq=lambda sock, rseg: rseg.seq + 1
+                )
+                break
+            except socket.timeout:
+                print(f'[{self.seq}] @send, timeout waiting BYTECOUNT ACK, resending BYTECOUNT')
+                self._send_segment(tcp_segment)
+
+        # Start sending all the message slices
+        for message_slice in messages_sliced:
+            # Send message slice
+            self.seq += len(message_slice)
+            payload = message_slice.decode('latin1')
+            tcp_segment = SegmentTCP(False, False, False, self.seq, payload)
+            print(f'[{self.seq}] @send, send msg slice:\'{payload}\'')
+            self._send_segment(tcp_segment)
+
+            # Wait message slice ACK
+            print(f'[{self.seq}] @send, wait msg slice ACK...')
+            while True:
+                try:
+                    self._wait_message(
+                        f_condition=lambda sock, rseg: rseg.ack and rseg.seq == sock.seq,
+                        f_update_seq=lambda sock, rseg: sock.seq
+                    )
+                    break
+                except socket.timeout:
+                    print(f'[{self.seq}] @send, timeout waiting data ACK, resending slice')
+                    self._send_segment(tcp_segment)
+
+        print('@send, end')
+
+    def recv(self, buffer_size: int) -> bytes:
+        if buffer_size <= 0:
+            raise ValueError('buffer_size must be positive')
+
+        print(f'[{self.seq}] @recv({buffer_size}), waiting message...')
+
+        while True:
+            if len(self.recv_buffer) > 0:
+                chunk_length = min(buffer_size, len(self.recv_buffer))
+                chunk = bytes(self.recv_buffer[:chunk_length])
+                del self.recv_buffer[:chunk_length]
+
+                return chunk
+
+            try:
+                recv_segment, recv_address = self._wait_message(
+                    f_condition=lambda sock, rseg: True,
+                    f_update_seq=lambda sock, rseg: sock.seq
+                )
+            except socket.timeout:
+                # Continue waiting for the expected segment
+                print(f'[{self.seq}] @recv, timeout waiting data, continuing')
+                continue
+
+            # If expected total bytes is not set, message should be bytecount of message
+            if self.expected_total_bytes is None or len(self.current_message) >= self.expected_total_bytes:
+                self.expected_total_bytes = int(recv_segment.msg)
+                self.bytes_received_in_message = 0
+                self.current_message = ''
+                self.recv_buffer.clear()
+                self.seq = recv_segment.seq + 1
+
+                tcp_segment = SegmentTCP(False, True, False, self.seq, '')
+                self._send_segment(tcp_segment)
+                continue
+
+            if self.seq is not None and recv_segment.seq <= self.seq:
+                # Duplicate or out-of-order segment, re-ACK last confirmed seq
+                print(f'[{self.seq}] @recv, duplicate segment detected (seq {recv_segment.seq}), re-ACKing')
+                tcp_segment = SegmentTCP(False, True, False, self.seq, '')
+                self._send_segment(tcp_segment)
+                continue
+
+            # Otherwise, it is a slice of the message
+            data_bytes = recv_segment.msg.encode('latin1')
+            self.current_message += recv_segment.msg
+            self.bytes_received_in_message += len(data_bytes)
+            self.seq = recv_segment.seq
+
+            # Send the ACK
+            tcp_segment = SegmentTCP(False, True, False, self.seq, '')
+            self._send_segment(tcp_segment)
+
+            self.recv_buffer.extend(data_bytes)
+        
+    def _send_segment(self, tcp_segment, timeout=0):
         message_bytes = SegmentTCP.create_segment(tcp_segment)
-        print(f'@send, sent bytecount: {message_bytes}')
+        print(f'[{self.seq}] @_send_segment, sent msg: {tcp_segment}')
         self.socket.sendto(message_bytes, (self.destination_addr, self.destination_port))
 
-        # Then, wait for the ACK of the bytecount message
-        waiting_ack = True
-        while waiting_ack:
-            recv_message, recv_address = self.socket.recvfrom(UDP_BUFFER_SIZE)
-            print(f'"send, recv bytecount ACK: {recv_message}')
-            recv_segment = SegmentTCP.parse_segment(recv_message)
-
-            if recv_segment.ack and recv_segment.seq == self.seq + 1:
-                self.seq += 1
-                waiting_ack = False
-
-        # Start sending message slices
-        for message_slice in messages_sliced:
-            self.seq += len(message_slice)
-            tcp_segment = SegmentTCP(False, False, False, self.seq, len(message_slice))
-            message_bytes = SegmentTCP.create_segment(tcp_segment)
-            print(f'@send, sent msg: {message_bytes}')
-            self.socket.sendto(message_bytes, (self.destination_addr, self.destination_port))
-
-            # For each message sent, wait the corresponding ACK
-            waiting_ack = True
-            while waiting_ack:
+    def _wait_message(self, f_condition, f_update_seq, timeout=0):
+        is_waiting = True
+        while is_waiting:
+            try:
                 recv_message, recv_address = self.socket.recvfrom(UDP_BUFFER_SIZE)
-                print(f'"send, recv msg ACK: {recv_message}')
-                recv_segment = SegmentTCP.parse_segment(recv_message)
-
-                if recv_segment.ack and recv_segment.seq == self.seq + len(message_slice):
-                    self.seq += len(message_slice)
-                    waiting_ack = False
-
-    def recv(self, buffer_size: int) -> None:
-        # First, wait for the bytecount message
-        waiting_bytecount = True
-        while waiting_bytecount:
-            recv_message, recv_address = self.socket.recvfrom(buffer_size)
-            print(f'@recv, recv bytecount: {recv_message}')
+            except socket.timeout as exc:
+                raise exc
             recv_segment = SegmentTCP.parse_segment(recv_message)
+            print(f'[{self.seq}] @_wait_message, recv: {recv_segment}')
+            
+            if f_condition(self, recv_segment):
+                is_waiting = False
+                self.seq = f_update_seq(self, recv_segment)
+                print(f'[{self.seq}] @_wait_message, confirmed')
 
-            if recv_segment.msg.isdigit() and recv_segment.seq == self.seq + 1:
-                self.seq += 1
-                message_total_length = int(recv_segment.msg)
-                waiting_bytecount = False
-
-        # Then, start receiving messages and assembling the full message
-        message = "".encode()
-        while len(message) < message_total_length:
-            waiting_msg = True
-            while waiting_msg:
-                recv_message, recv_address = self.socket.recvfrom(buffer_size)
-                print(f'@recv, recv msg: {recv_message}')
-                recv_segment = SegmentTCP.parse_segment(recv_message)
-
-                if recv_segment.seq > self.seq:
-                    self.seq += len(recv_segment.msg)
-                    message += recv_message.msg
-
-                    # Send the corresponding ACK
-                    # TODO send ack
+        return recv_segment, recv_address
