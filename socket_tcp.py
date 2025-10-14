@@ -1,6 +1,7 @@
 import socket
 import random
 import math
+import time
 
 from segment_tcp import SegmentTCP
 
@@ -246,7 +247,8 @@ class SocketTCP:
         print(f'[{self.seq}] @close, send FIN')
         self._send_segment(fin_segment)
 
-        # Wait for ACK of our FIN
+        # Wait ACK of our FIN (≤3 timeouts). On timeout: resend FIN.
+        retries = 0
         print(f'[{self.seq}] @close, wait FIN ACK...')
         while True:
             try:
@@ -256,10 +258,17 @@ class SocketTCP:
                 )
                 break
             except socket.timeout:
+                retries += 1
+                if retries >= 3:
+                    print(f'[{self.seq}] @close, 3 timeouts waiting FIN ACK → assume peer closed')
+                    self.socket.close()
+                    self.is_closed = True
+                    return
                 print(f'[{self.seq}] @close, timeout waiting FIN ACK, resending FIN')
                 self._send_segment(fin_segment)
 
-        # Wait for FIN from peer
+        # Wait peer FIN (≤3 timeouts). On timeout: resend FIN.
+        retries = 0
         print(f'[{self.seq}] @close, wait peer FIN...')
         while True:
             try:
@@ -269,17 +278,28 @@ class SocketTCP:
                 )
                 break
             except socket.timeout:
-                print(f'[{self.seq}] @close, timeout waiting peer FIN, continuing')
-                continue
+                retries += 1
+                if retries >= 3:
+                    print(f'[{self.seq}] @close, 3 timeouts waiting peer FIN → assume peer closed')
+                    self.socket.close()
+                    self.is_closed = True
+                    return
+                print(f'[{self.seq}] @close, timeout waiting peer FIN, resending FIN')
+                self._send_segment(fin_segment)
 
-        # Send final ACK
+        # Send final ACK, then re-send it 3 times with a timeout between sends.
         ack_segment = SegmentTCP(False, True, False, self.seq, '')
         print(f'[{self.seq}] @close, send final ACK')
         self._send_segment(ack_segment)
+        for i in range(3):
+            time.sleep(SEGMENT_TIMEOUT_SECONDS)
+            print(f'[{self.seq}] @close, re-send final ACK {i+1}/3')
+            self._send_segment(ack_segment)
 
         self.socket.close()
         self.is_closed = True
         print(f'[{self.seq}] @close, connection closed')
+
 
     def recv_close(self) -> None:
         if self.is_closed:
@@ -287,7 +307,7 @@ class SocketTCP:
 
         print(f'[{self.seq}] @recv_close, waiting FIN...')
 
-        # Wait for FIN from peer
+        # Wait for FIN from peer (keep waiting)
         while True:
             try:
                 recv_segment, _ = self._wait_message(
@@ -299,18 +319,19 @@ class SocketTCP:
                 print(f'[{self.seq}] @recv_close, timeout waiting FIN, continuing')
                 continue
 
-        # Send ACK for received FIN
+        # ACK peer FIN
         ack_segment = SegmentTCP(False, True, False, self.seq, '')
         print(f'[{self.seq}] @recv_close, send ACK for FIN')
         self._send_segment(ack_segment)
 
-        # Send own FIN
+        # Send our FIN
         self.seq += 1
         fin_segment = SegmentTCP(False, False, True, self.seq, '')
         print(f'[{self.seq}] @recv_close, send FIN')
         self._send_segment(fin_segment)
 
-        # Wait for ACK of our FIN
+        # Wait for final ACK (≤3 timeouts). On timeout: resend FIN.
+        retries = 0
         print(f'[{self.seq}] @recv_close, wait final ACK...')
         while True:
             try:
@@ -320,12 +341,20 @@ class SocketTCP:
                 )
                 break
             except socket.timeout:
+                retries += 1
+                if retries >= 3:
+                    print(f'[{self.seq}] @recv_close, 3 timeouts waiting final ACK → assume peer closed')
+                    self.socket.close()
+                    self.is_closed = True
+                    print(f'[{self.seq}] @recv_close, connection closed')
+                    return
                 print(f'[{self.seq}] @recv_close, timeout waiting final ACK, resending FIN')
                 self._send_segment(fin_segment)
 
         self.socket.close()
         self.is_closed = True
         print(f'[{self.seq}] @recv_close, connection closed')
+
         
     def _send_segment(self, tcp_segment, timeout=0):
         message_bytes = SegmentTCP.create_segment(tcp_segment)
