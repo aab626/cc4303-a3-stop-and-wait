@@ -1,3 +1,10 @@
+"""
+Simplified TCP segment for Stop & Wait.
+CC4303 - Computer Networks
+Author: Augusto Aguayo Barham
+"""
+
+
 import re
 import sys
 
@@ -10,6 +17,7 @@ HEADER_REGEX = re.compile(
 
 VALID_BOOLS_STR = ['0', '1']
 
+# Container for each TCP segment
 class SegmentTCP:
     def __init__(self, syn:bool, ack:bool, fin:bool, seq:int, msg):
         if not isinstance(syn, bool):
@@ -38,6 +46,7 @@ class SegmentTCP:
     def __repr__(self):
         return str(self)
 
+    # Instantiates a segment based on a bytes response (a sent segment)
     @staticmethod
     def parse_segment(tcp_message: bytes) -> 'SegmentTCP':
         tcp_message_s = tcp_message.decode()
@@ -87,7 +96,7 @@ class SegmentTCP:
         segment = SegmentTCP(syn, ack, fin, seq, msg)
         return segment
 
-
+    # Casts the segment into bytes form, to send data over the network.
     @staticmethod
     def create_segment(segment: 'SegmentTCP') -> bytes:
         syn_str = '1' if segment.syn else '0'

@@ -1,21 +1,41 @@
+"""
+Test Client for the Simplified TCP Socket implementation using UDP sockets with Stop & Wait.
+CC4303 - Computer Networks
+Author: Augusto Aguayo Barham
+"""
+
+import argparse
 from socket_tcp import SocketTCP
 
-msg = 'An orange cat slipped into the server room, where cool air hummed and tiny lights blinked like stars. She padded between tall machines, batting at cables and chasing her shadow. A spinning fan caught her eye, and she pounced with a soft thump. Soon, she curled up by a warm router, purring as the servers buzzed gently around her.'
-msg = msg.encode()
+parser = argparse.ArgumentParser(description='Actividad 3: Sockets orientados a conexión con Stop & Wait')
+parser.add_argument('host', help='Server hostname or IP address')
+parser.add_argument('port', type=int, help='Server port number')
+args = parser.parse_args()
 
+# Read STDIN
+data = ''
+while True:
+    try:
+        line = input()
+        data += line + '\n'
+    except EOFError:
+        break
+
+data_bytes = data.encode()
+
+# Create socket and connect
 client_socket = SocketTCP()
-client_socket.connect(('localhost', 5000))
+client_socket.connect((args.host, args.port))
 
-print()
+print(' ============== CONNECTION DATA ==============')
 print(f'client socket : {client_socket}')
 print(f'client address: {client_socket.origin_addr}:{client_socket.origin_port}')
 print(f'server address: {client_socket.destination_addr}:{client_socket.destination_port}')
+print(' =============================================')
 print()
-
-print(f'Sending message: {msg.decode()}')
+print(' =============== SENDING DATA ================')
 print()
-client_socket.send(msg)
-
+client_socket.send(data_bytes)
 print()
-print('Closing client connection...')
+print(' ============= CLOSING CONNECTION ============')
 client_socket.close()

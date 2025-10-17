@@ -1,5 +1,5 @@
 """
-TCP Socket implementation using UDP sockets with Stop & Wait.
+Simplified TCP with Stop & Wait implementation.
 CC4303 - Computer Networks
 Author: Augusto Aguayo Barham
 """
@@ -16,12 +16,6 @@ UDP_BUFFER_SIZE = 4096
 MESSAGE_MAX_PACKET_SIZE = 16
 SEGMENT_TIMEOUT_SECONDS = 1.0
 
-# Debug settings
-DEBUG_MODE = True
-def print(*args, **kwargs):
-    if DEBUG_MODE:
-        builtins.print(*args, **kwargs)
-
 # Simplified TCP socket wrapper, using UDP with Stop & Wait.
 class SocketTCP:
     # Constructor
@@ -36,7 +30,6 @@ class SocketTCP:
         
         self.current_message = ''
         self.expected_total_bytes = None
-        self.recv_buffer = b''
         self.bytes_received_in_message = 0
         self.is_closed = False
 
@@ -51,15 +44,15 @@ class SocketTCP:
     def connect(self, address: tuple[str, int]) -> None:
         self.seq = random.randint(0, 100)
         self.destination_addr, self.destination_port = address
-        print(f'[{self.seq}] @connect, set seq to {self.seq}')
+        self._log(f'[{self.seq}] @connect, set seq to {self.seq}')
 
         # Send SYN, seq=x
         tcp_segment = SegmentTCP(True, False, False, self.seq, '')
-        print(f'[{self.seq}] @connect, send SYN')
+        self._log(f'[{self.seq}] @connect, send SYN')
         self._send_segment(tcp_segment)
 
         # Wait ACK+SYN, seq=x+1
-        print(f'[{self.seq}] @connect, wait ACK+SYN...')
+        self._log(f'[{self.seq}] @connect, wait ACK+SYN...')
         while True:
             try:
                 recv_segment, recv_address = self._wait_message(
@@ -68,7 +61,7 @@ class SocketTCP:
                 )
                 break
             except socket.timeout:
-                print(f'[{self.seq}] @connect, timeout waiting SYN-ACK, resending SYN')
+                self._log(f'[{self.seq}] @connect, timeout waiting SYN-ACK, resending SYN')
                 self._send_segment(tcp_segment)
 
         self.destination_addr, self.destination_port = recv_address
@@ -76,16 +69,16 @@ class SocketTCP:
         # Send ACK
         self.seq += 1
         tcp_segment = SegmentTCP(False, True, False, self.seq, '')
-        print(f'[{self.seq}] @connect, send ACK')
+        self._log(f'[{self.seq}] @connect, send ACK')
         self._send_segment(tcp_segment)
 
-        print(f'[{self.seq}] @connect, handshake completed!')
+        self._log(f'[{self.seq}] @connect, handshake completed!')
 
     # Server function
     # Responds to a client-initiated handshake
     def accept(self) -> 'tuple[SocketTCP, tuple[str, int]]':
         # Wait SYN, will set seq=x
-        print(f'[{self.seq}] @accept, wait SYN...')
+        self._log(f'[{self.seq}] @accept, wait SYN...')
         while True:
             try:
                 recv_segment, recv_address = self._wait_message(
@@ -95,7 +88,8 @@ class SocketTCP:
                 break
             except socket.timeout:
                 # Continue listening for new SYNs
-                print(f'[{self.seq}] @accept, timeout waiting SYN, continuing')
+                self._log(
+                    f'[{self.seq}] @accept, timeout waiting SYN, continuing')
                 continue
 
         conn_socket = SocketTCP()
@@ -110,11 +104,11 @@ class SocketTCP:
         # Send ACK+SYN, seq=x+1
         conn_socket.seq += 1
         tcp_segment = SegmentTCP(True, True, False, conn_socket.seq, '')
-        print(f'[{conn_socket.seq}] @accept(conn), send ACK+SYN')
+        self._log(f'[{conn_socket.seq}] @accept(conn), send ACK+SYN')
         conn_socket._send_segment(tcp_segment)
 
         # Wait ACK
-        print(f'[{conn_socket.seq}] @accept(conn), wait ACK...')
+        self._log(f'[{conn_socket.seq}] @accept(conn), wait ACK...')
         while True:
             try:
                 conn_socket._wait_message(
@@ -123,10 +117,10 @@ class SocketTCP:
                 )
                 break
             except socket.timeout:
-                print(f'[{conn_socket.seq}] @accept(conn), timeout waiting ACK, resending SYN-ACK')
+                self._log(f'[{conn_socket.seq}] @accept(conn), timeout waiting ACK, resending SYN-ACK')
                 conn_socket._send_segment(tcp_segment)
 
-        print(f'[{conn_socket.seq}] @accept(conn), handshake completed!')
+        self._log(f'[{conn_socket.seq}] @accept(conn), handshake completed!')
 
         return (conn_socket, (conn_socket.origin_addr, conn_socket.origin_port))
     
@@ -143,11 +137,11 @@ class SocketTCP:
         # Send the bytecount of the whole message
         self.seq += 1
         tcp_segment = SegmentTCP(False, False, False, self.seq, message_length)
-        print(f'[{self.seq}] @send, send BYTECOUNT')
+        self._log(f'[{self.seq}] @send, send BYTECOUNT')
         self._send_segment(tcp_segment)
 
         # Wait bytecount ACK
-        print(f'[{self.seq}] @send, wait BYTECOUNT ACK...')
+        self._log(f'[{self.seq}] @send, wait BYTECOUNT ACK...')
         while True:
             try:
                 self._wait_message(
@@ -156,7 +150,7 @@ class SocketTCP:
                 )
                 break
             except socket.timeout:
-                print(f'[{self.seq}] @send, timeout waiting BYTECOUNT ACK, resending BYTECOUNT')
+                self._log(f'[{self.seq}] @send, timeout waiting BYTECOUNT ACK, resending BYTECOUNT')
                 self._send_segment(tcp_segment)
 
         # Step 2
@@ -164,13 +158,13 @@ class SocketTCP:
         for message_slice in messages_sliced:
             # Send message slice
             self.seq += len(message_slice)
-            payload = message_slice.decode()
-            tcp_segment = SegmentTCP(False, False, False, self.seq, payload)
-            print(f'[{self.seq}] @send, send msg slice:\'{payload}\'')
+            message_slice_data = message_slice.decode()
+            tcp_segment = SegmentTCP(False, False, False, self.seq, message_slice_data)
+            self._log(f'[{self.seq}] @send, send msg slice:\'{message_slice_data}\'')
             self._send_segment(tcp_segment)
 
             # Wait message slice ACK
-            print(f'[{self.seq}] @send, wait msg slice ACK...')
+            self._log(f'[{self.seq}] @send, wait msg slice ACK...')
             while True:
                 try:
                     self._wait_message(
@@ -179,41 +173,34 @@ class SocketTCP:
                     )
                     break
                 except socket.timeout:
-                    print(f'[{self.seq}] @send, timeout waiting data ACK, resending msg slice')
+                    self._log(f'[{self.seq}] @send, timeout waiting data ACK, resending msg slice')
                     self._send_segment(tcp_segment)
 
-        print(f'[{self.seq}] @send, end')
+        self._log(f'[{self.seq}] @send, end')
 
     # Receives a TCP Segment of a message, of size buffer_size
     def recv(self, buffer_size: int) -> bytes:
-        print(f'[{self.seq}] @recv({buffer_size}), waiting message...')
+        self._log(f'[{self.seq}] @recv({buffer_size}), waiting message...')
 
         while True:
-            # If there is content in the buffer, use those first
-            if self.recv_buffer:
-                chunk_size = min(buffer_size, len(self.recv_buffer))
-                chunk = self.recv_buffer[:chunk_size]
-                self.recv_buffer = self.recv_buffer[chunk_size:]
-                return chunk
-
-            # Else, get data from recv
+            # Wait for data
             try:
                 recv_segment, recv_address = self._wait_message(
                     f_condition=lambda sock, rseg: True,
                     f_update_seq=lambda sock, rseg: sock.seq
                 )
             except socket.timeout:
-                print(f'[{self.seq}] @recv, timeout waiting data, continuing')
+                self._log(f'[{self.seq}] @recv, timeout waiting data, continuing')
                 continue
 
             # If expected total bytes is not set, message should be bytecount of message
-            if self.expected_total_bytes is None or len(self.current_message) >= self.expected_total_bytes:
+            if self.expected_total_bytes is None or len(self.current_message.encode()) >= self.expected_total_bytes:
                 self.expected_total_bytes = int(recv_segment.msg)
                 self.bytes_received_in_message = 0
                 self.current_message = ''
-                self.recv_buffer = b''
                 self.seq = recv_segment.seq + 1
 
+                # Send bytecount ACK
                 tcp_segment = SegmentTCP(False, True, False, self.seq, '')
                 self._send_segment(tcp_segment)
                 continue
@@ -221,7 +208,7 @@ class SocketTCP:
             # Handle duplicates or out of order packages
             # Just re-send the last ACK for the last confirmed package
             if self.seq is not None and recv_segment.seq <= self.seq:
-                print(f'[{self.seq}] @recv, duplicate segment detected (seq {recv_segment.seq}), re-ACKing')
+                self._log(f'[{self.seq}] @recv, duplicate segment detected (seq {recv_segment.seq}), re-ACKing')
                 tcp_segment = SegmentTCP(False, True, False, self.seq, '')
                 self._send_segment(tcp_segment)
                 continue
@@ -235,90 +222,64 @@ class SocketTCP:
             # Send the ACK
             tcp_segment = SegmentTCP(False, True, False, self.seq, '')
             self._send_segment(tcp_segment)
-            self.recv_buffer += data_bytes
+
+            return data_bytes
 
     # Terminates the socket
-    # Handles the client-side FIN/ACK package exchange
+    # Handles the B-Host-side FIN/ACK package exchange
     def close(self) -> None:
         if self.is_closed:
             return
 
-        print(f'[{self.seq}] @close, initiating termination')
-
-        if self.destination_addr is None or self.destination_port is None:
-            self.socket.close()
-            self.is_closed = True
-            return
-
-        if self.seq is None:
-            self.seq = 0
+        self._log(f'[{self.seq}] @close, initiating termination')
 
         # Send FIN
         self.seq += 1
         fin_segment = SegmentTCP(False, False, True, self.seq, '')
-        print(f'[{self.seq}] @close, send FIN')
+        self._log(f'[{self.seq}] @close, send FIN')
         self._send_segment(fin_segment)
 
-        # Wait ACK of sent FIN (3 timeouts), on timeout resends FIN
-        retries = 0
-        print(f'[{self.seq}] @close, wait FIN+ACK...')
+        # Wait FIN+ACK (3 timeouts), on timeout resends FIN
+        retries = 1
+        self._log(f'[{self.seq}] @close, wait FIN+ACK...')
         while True:
             try:
                 self._wait_message(
-                    f_condition=lambda sock, rseg: rseg.ack and rseg.seq == sock.seq,
+                    f_condition=lambda sock, rseg: rseg.ack and rseg.fin and rseg.seq == sock.seq,
                     f_update_seq=lambda sock, rseg: sock.seq
                 )
                 break
             except socket.timeout:
                 retries += 1
+
+                # If third sent FIN+ACK without response, assume connection is closed.
                 if retries >= 3:
-                    print(f'[{self.seq}] @close, 3 timeouts waiting FIN+ACK, assume connection closed')
+                    self._log(f'[{self.seq}] @close, 3 timeouts waiting FIN+ACK, assume connection closed')
                     self.socket.close()
                     self.is_closed = True
                     return
-                print(f'[{self.seq}] @close, timeout waiting FIN+ACK, resending FIN')
+                
+                self._log(f'[{self.seq}] @close, timeout waiting FIN+ACK, resending FIN')
                 self._send_segment(fin_segment)
 
-        # Wait FIN (3 timeouts), on timeout resends FIN
-        retries = 0
-        print(f'[{self.seq}] @close, wait peer FIN...')
-        while True:
-            try:
-                recv_segment, _ = self._wait_message(
-                    f_condition=lambda sock, rseg: rseg.fin,
-                    f_update_seq=lambda sock, rseg: rseg.seq
-                )
-                break
-            except socket.timeout:
-                retries += 1
-                if retries >= 3:
-                    print(f'[{self.seq}] @close, 3 timeouts waiting FIN, assume connection closed')
-                    self.socket.close()
-                    self.is_closed = True
-                    return
-                print(f'[{self.seq}] @close, timeout waiting peer FIN, resending FIN')
-                self._send_segment(fin_segment)
-
-        # Send final ACK, then re-send it 3 times with a timeout between sends.
+        # Send final ACK it 3 times with a timeout between sends.
         ack_segment = SegmentTCP(False, True, False, self.seq, '')
-        print(f'[{self.seq}] @close, send final ACK')
-        self._send_segment(ack_segment)
         for i in range(3):
-            time.sleep(SEGMENT_TIMEOUT_SECONDS)
-            print(f'[{self.seq}] @close, re-send final ACK {i+1}/3')
+            self._log(f'[{self.seq}] @close, re-send final ACK {i+1}/3')
             self._send_segment(ack_segment)
+            time.sleep(SEGMENT_TIMEOUT_SECONDS)
 
         self.socket.close()
         self.is_closed = True
-        print(f'[{self.seq}] @close, connection closed')
+        self._log(f'[{self.seq}] @close, connection closed')
 
     # Terminates the socket
-    # Handles the server-side FIN/ACK package exchange
+    # Handles the A-Host-side FIN/ACK package exchange
     def recv_close(self) -> None:
         if self.is_closed:
             return
 
-        print(f'[{self.seq}] @recv_close, waiting FIN...')
+        self._log(f'[{self.seq}] @recv_close, waiting FIN...')
 
         # Wait FIN
         while True:
@@ -329,23 +290,17 @@ class SocketTCP:
                 )
                 break
             except socket.timeout:
-                print(f'[{self.seq}] @recv_close, timeout waiting FIN, continuing')
+                self._log(
+                    f'[{self.seq}] @recv_close, timeout waiting FIN, continuing')
                 continue
 
-        # Send ACK
-        ack_segment = SegmentTCP(False, True, False, self.seq, '')
-        print(f'[{self.seq}] @recv_close, send ACK for FIN')
-        self._send_segment(ack_segment)
+        # Send FIN+ACK
+        tcp_segment = SegmentTCP(False, True, True, self.seq, '')
+        self._log(f'[{self.seq}] @recv_close, send FIN+ACK')
+        self._send_segment(tcp_segment)
 
-        # Send FIN
-        self.seq += 1
-        fin_segment = SegmentTCP(False, False, True, self.seq, '')
-        print(f'[{self.seq}] @recv_close, send FIN')
-        self._send_segment(fin_segment)
-
-        # Wait for final ACK (3 timeouts), on timeout resends FIN
-        retries = 0
-        print(f'[{self.seq}] @recv_close, wait final ACK...')
+        retries = 1
+        self._log(f'[{self.seq}] @recv_close, wait final ACK...')
         while True:
             try:
                 self._wait_message(
@@ -356,23 +311,24 @@ class SocketTCP:
             except socket.timeout:
                 retries += 1
                 if retries >= 3:
-                    print(f'[{self.seq}] @recv_close, 3 timeouts waiting final ACK, assume connection closed')
+                    self._log(f'[{self.seq}] @recv_close, 3 timeouts waiting final ACK, assume connection closed')
                     self.socket.close()
                     self.is_closed = True
-                    print(f'[{self.seq}] @recv_close, connection closed')
+                    self._log(f'[{self.seq}] @recv_close, connection closed')
                     return
                 
-                print(f'[{self.seq}] @recv_close, timeout waiting final ACK, resending FIN')
-                self._send_segment(fin_segment)
+                self._log(f'[{self.seq}] @recv_close, timeout waiting final ACK, resending FIN+ACK')
+                tcp_segment = SegmentTCP(False, True, True, self.seq, '')
+                self._send_segment(tcp_segment)
 
         self.socket.close()
         self.is_closed = True
-        print(f'[{self.seq}] @recv_close, connection closed')
+        self._log(f'[{self.seq}] @recv_close, connection closed')
 
     # Helper private method to send a tcp segment
     def _send_segment(self, tcp_segment):
         message_bytes = SegmentTCP.create_segment(tcp_segment)
-        print(f'[{self.seq}] @_send_segment, sent msg: {tcp_segment}')
+        self._log(f'[{self.seq}] @_send_segment, sent msg: {tcp_segment}')
         self.socket.sendto(message_bytes, (self.destination_addr, self.destination_port))
 
     # Helper private method to await a tcp segment based on a condition
@@ -388,18 +344,23 @@ class SocketTCP:
             except socket.timeout as exc:
                 raise exc
             recv_segment = SegmentTCP.parse_segment(recv_message)
-            print(f'[{self.seq}] @_wait_message, recv: {recv_segment}')
+            self._log(f'[{self.seq}] @_wait_message, recv: {recv_segment}')
             
             condition_met = f_condition(self, recv_segment)
             if condition_met:
                 is_waiting = False
                 self.seq = f_update_seq(self, recv_segment)
-                print(f'[{self.seq}] @_wait_message, confirmed')
+                self._log(f'[{self.seq}] @_wait_message, confirmed')
             else:
                 if recv_segment.syn and recv_segment.ack:
                     ack_seq = recv_segment.seq + 1
                     ack_segment = SegmentTCP(False, True, False, ack_seq, '')
-                    print(f'[{self.seq}] @_wait_message, duplicate SYN+ACK detected, re-ACKing with seq {ack_seq}')
+                    self._log(
+                        f'[{self.seq}] @_wait_message, duplicate SYN+ACK detected, re-ACKing with seq {ack_seq}')
                     self._send_segment(ack_segment)
 
         return recv_segment, recv_address
+
+    # Helper debugging function
+    def _log(self, message):
+        print(message)
