@@ -14,7 +14,7 @@ from segment_tcp import SegmentTCP
 # Socket constants
 UDP_BUFFER_SIZE = 4096
 MESSAGE_MAX_PACKET_SIZE = 16
-SEGMENT_TIMEOUT_SECONDS = 1.0
+SEGMENT_TIMEOUT_SECONDS = 1.5
 
 # Simplified TCP socket wrapper, using UDP with Stop & Wait.
 class SocketTCP:

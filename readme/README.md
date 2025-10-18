@@ -82,7 +82,9 @@ Envía el mensaje `message` a la dirección asociada al `SocketTCP`, implementan
 
 Primero siempre envía un segmento con el largo de los datos a recibir, luego se envía el mensaje original dividido en trozos de 16 bytes cada uno (tamaño controlado mediante la variable `MESSAGE_MAX_PACKET_SIZE`).
 
-El envío de un segmento y subsecuente espera de su `ACK` correspondiente se hace mediante los métodos auxiliares `_send_segment` y `_wait_message`, que se desglosan más abajo.
+Acá se implementa parte de la lógica de *Stop & Wait*, el envío de un segmento y subsecuente espera de su `ACK` correspondiente se hace mediante los métodos auxiliares `_send_segment` y `_wait_message`, que se desglosan más abajo. 
+
+Así, el envío concluye al recibir el `ACK` final.
 
 #### recv
 ```python
@@ -93,7 +95,7 @@ Método que recibe una cantidad de bytes indicado por la variable `buffer_size` 
 
 Se encarga de diferenciar la recepción de el número total de bytes a recibir (*bytecount*) de los datos en sí, tambien maneja duplicados comparando el número de secuencia.
 
-Al igual que el método `send`, esta abstrae el envío y recepción de segmentos mediante los métodos `_send_segment` y `_wait_message`.
+Al igual que el método `send`, esta abstrae el envío y recepción de segmentos mediante los métodos `_send_segment` y `_wait_message`. La diferencia radica que acá se hace uso de un `buffer` interno de datos, para los casos donde se reciban menos o más datos que lo esperado, y así poder responder al caso borde.
 
 #### close
 ```python
@@ -145,6 +147,13 @@ Una vez recibido un mensaje que fue verificado por `f_condition`, se actualiza e
 
 Este diseño permite manejar las distintas configuraciones de mensajes: sincronización, datos y cierre.
 
+##### _remaining_to_deliver
+```python
+_remaining_to_deliver(self) -> int
+```
+
+Método auxiliar, calcula cuantos bytes faltan por entregar al invocador de `recv`, se utiliza en `recv` para saber si hay suficientes datos en el buffer para devolver un mensaje, sin esperar nuevos segmentos de la red.
+
 ##### _log
 ```python
 _log(self, message: str) -> None
@@ -188,4 +197,25 @@ Método estático para crear una cadena de bytes en el formato especificado ante
 ### Caso borde, último ACK perdído en el Handshake
 
 ## Pruebas
+
+Las pruebas se realizaron utilizando `netem`:
+
+```bash
+sudo tc qdisc add dev lo root netem loss 20.0% delay 0.5s
+```
+
+Con el archivo `testdata.txt` (488 bytes):
+
+```text
+[01] linea 01 - linea 01 - linea 01 - linea 01 - linea 01 - linea 01 - linea 01 - linea 01
+[02] linea 02 - linea 02 - linea 02 - linea 02 - linea 02 - linea 02 - linea 02 - linea 02
+[03] linea 03 - linea 03 - linea 03 - linea 03 - linea 03 - linea 03 - linea 03 - linea 03
+[04] linea 04 - linea 04 - linea 04 - linea 04 - linea 04 - linea 04 - linea 04 - linea 04
+[05] linea 05 - linea 05 - linea 05 - linea 05 - linea 05 - linea 05 - linea 05 - linea 05
+```
+
+### Prueba 1
+
+* Tamaño de paquete de envío: 16 bytes.
+* Tamaño del buffer de recepción: 16 bytes.
 
