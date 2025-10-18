@@ -23,8 +23,12 @@ print(f'conn origin address: {conn_socket.origin_addr}:{conn_socket.origin_port}
 print(f'conn dest address  : {conn_socket.destination_addr}:{conn_socket.destination_port}')
 print(' =============================================')
 
-while conn_socket.expected_total_bytes is None or len(conn_socket.current_message) < conn_socket.expected_total_bytes:
+# while conn_socket.expected_total_bytes is None or len(conn_socket.current_message) < conn_socket.expected_total_bytes:
+#     recv_bytes = conn_socket.recv(BUFFER_SIZE)
+
+while (conn_socket.expected_total_bytes is None or conn_socket.bytes_received_in_message < conn_socket.expected_total_bytes):
     recv_bytes = conn_socket.recv(BUFFER_SIZE)
+
 
 print()
 print(' =============== DATA RECEIVED ===============')

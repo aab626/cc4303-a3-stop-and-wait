@@ -186,13 +186,29 @@ class SocketTCP:
     def recv(self, buffer_size: int) -> bytes:
         self._log(f'[{self.seq}] @recv({buffer_size}), waiting message...')
 
-        # If the buffer contains data, return these first
-        if self.recv_buffer:
-            data_buffered = self.recv_buffer[:buffer_size]
-            self.recv_buffer = self.recv_buffer[buffer_size:]
-            return data_buffered
+        # If the message size is known and enough if buffered just return the data
+        if self.expected_total_bytes is not None:
+            n_bytes = min(buffer_size, self._remaining_to_deliver())
+            if n_bytes > 0 and len(self.recv_buffer) >= n_bytes:
+                data_buffered = self.recv_buffer[:n_bytes]
+                self.recv_buffer = self.recv_buffer[n_bytes:]
+                return data_buffered
+
+        # # If the buffer contains data, return these first
+        # if self.recv_buffer:
+        #     data_buffered = self.recv_buffer[:buffer_size]
+        #     self.recv_buffer = self.recv_buffer[buffer_size:]
+        #     return data_buffered
 
         while True:
+            # Try to satisfy recv call from buffer
+            if self.expected_total_bytes is not None:
+                n_bytes = min(buffer_size, self._remaining_to_deliver())
+                if n_bytes > 0 and len(self.recv_buffer) >= n_bytes:
+                    data_buffered = self.recv_buffer[:n_bytes]
+                    self.recv_buffer = self.recv_buffer[n_bytes:]
+                    return data_buffered
+            
             # Wait for data
             try:
                 recv_segment, recv_address = self._wait_segment(
@@ -204,23 +220,23 @@ class SocketTCP:
                 continue
 
             # If expected total bytes is not set, message should be bytecount of message
-            if self.expected_total_bytes is None or len(self.current_message.encode()) >= self.expected_total_bytes:
+            if self.expected_total_bytes is None or self.bytes_received_in_message >= self.expected_total_bytes:
                 self.expected_total_bytes = int(recv_segment.msg)
                 self.bytes_received_in_message = 0
                 self.current_message = ''
                 self.seq = recv_segment.seq + 1
 
                 # Send bytecount ACK
-                tcp_segment = SegmentTCP(False, True, False, self.seq, '')
-                self._send_segment(tcp_segment)
+                ack_segment = SegmentTCP(False, True, False, self.seq, '')
+                self._send_segment(ack_segment)
                 continue
 
             # Handle duplicates or out of order packages
             # Just re-send the last ACK for the last confirmed package
             if self.seq is not None and recv_segment.seq <= self.seq:
                 self._log(f'[{self.seq}] @recv, duplicate segment detected (seq {recv_segment.seq}), re-ACKing')
-                tcp_segment = SegmentTCP(False, True, False, self.seq, '')
-                self._send_segment(tcp_segment)
+                ack_segment = SegmentTCP(False, True, False, self.seq, '')
+                self._send_segment(ack_segment)
                 continue
 
             # Otherwise, it is a slice of the message
@@ -235,10 +251,10 @@ class SocketTCP:
 
             # Store received bytes, only return up to buffer_size, thes remainder stays in the buffer
             self.recv_buffer += data_bytes
-            data_out = self.recv_buffer[:buffer_size]
-            self.recv_buffer = self.recv_buffer[buffer_size:]
+            # data_out = self.recv_buffer[:buffer_size]
+            # self.recv_buffer = self.recv_buffer[buffer_size:]
 
-            return data_out
+            # return data_out
 
     # Terminates the socket
     # Handles the B-Host-side FIN/ACK package exchange
@@ -384,6 +400,14 @@ class SocketTCP:
 
 
         return recv_segment, recv_address
+    
+    # Helper that calculates how many bytes remain to deliver
+    def _remaining_to_deliver(self) -> int:
+        if self.expected_total_bytes is None:
+            return 0
+        
+        delivered_so_far = self.bytes_received_in_message - len(self.recv_buffer)
+        return max(self.expected_total_bytes - delivered_so_far, 0)
 
     # Helper debugging function
     def _log(self, message: str) -> None:
