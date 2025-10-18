@@ -360,7 +360,7 @@ class SocketTCP:
                     self._send_segment(ack_segment)
                 else:
                     if self.seq is not None and recv_segment.seq <= self.seq:
-                        ack_segment = SegmentTCP(False, True, False, ack_seq, '')
+                        ack_segment = SegmentTCP(False, True, False, self.seq, '')
                         self._log(f'[{self.seq}] @_wait_message, duplicate segment seq={recv_segment.seq}<={self.seq}, resending ACK')
                         self._send_segment(ack_segment)
 
