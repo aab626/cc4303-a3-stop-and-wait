@@ -25,6 +25,7 @@ data_bytes = data.encode()
 
 # Create socket and connect
 client_socket = SocketTCP()
+client_socket.debug_mode = True
 client_socket.connect((args.host, args.port))
 
 print(' ============== CONNECTION DATA ==============')

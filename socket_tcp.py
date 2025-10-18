@@ -7,7 +7,7 @@ Author: Augusto Aguayo Barham
 import socket
 import random
 import time
-import builtins
+from typing import Callable
 
 from segment_tcp import SegmentTCP
 
@@ -32,6 +32,9 @@ class SocketTCP:
         self.expected_total_bytes = None
         self.bytes_received_in_message = 0
         self.is_closed = False
+        self.recv_buffer = b''
+
+        self.debug_mode = False
 
     # Server function
     # Start listerning on the address
@@ -55,7 +58,7 @@ class SocketTCP:
         self._log(f'[{self.seq}] @connect, wait ACK+SYN...')
         while True:
             try:
-                recv_segment, recv_address = self._wait_message(
+                recv_segment, recv_address = self._wait_segment(
                     f_condition=lambda sock, rseg: rseg.ack and rseg.syn and rseg.seq == sock.seq + 1,
                     f_update_seq=lambda sock, rseg: rseg.seq
                 )
@@ -81,7 +84,7 @@ class SocketTCP:
         self._log(f'[{self.seq}] @accept, wait SYN...')
         while True:
             try:
-                recv_segment, recv_address = self._wait_message(
+                recv_segment, recv_address = self._wait_segment(
                     f_condition=lambda sock, rseg: rseg.syn,
                     f_update_seq=lambda sock, rseg: sock.seq
                 )
@@ -94,6 +97,7 @@ class SocketTCP:
 
         conn_socket = SocketTCP()
         conn_socket.destination_addr, conn_socket.destination_port = recv_address
+        conn_socket.debug_mode = self.debug_mode
         local_bind_addr = self.origin_addr if self.origin_addr is not None else ''
 
         # Let the system pick a port
@@ -111,7 +115,7 @@ class SocketTCP:
         self._log(f'[{conn_socket.seq}] @accept(conn), wait ACK...')
         while True:
             try:
-                conn_socket._wait_message(
+                conn_socket._wait_segment(
                     f_condition=lambda sock, rseg: rseg.ack and rseg.seq == sock.seq + 1,
                     f_update_seq=lambda sock, rseg: rseg.seq
                 )
@@ -144,7 +148,7 @@ class SocketTCP:
         self._log(f'[{self.seq}] @send, wait BYTECOUNT ACK...')
         while True:
             try:
-                self._wait_message(
+                self._wait_segment(
                     f_condition=lambda sock, rseg: rseg.ack and rseg.seq == sock.seq + 1,
                     f_update_seq=lambda sock, rseg: rseg.seq + 1
                 )
@@ -167,7 +171,7 @@ class SocketTCP:
             self._log(f'[{self.seq}] @send, wait msg slice ACK...')
             while True:
                 try:
-                    self._wait_message(
+                    self._wait_segment(
                         f_condition=lambda sock, rseg: rseg.ack and rseg.seq == sock.seq,
                         f_update_seq=lambda sock, rseg: sock.seq
                     )
@@ -182,10 +186,16 @@ class SocketTCP:
     def recv(self, buffer_size: int) -> bytes:
         self._log(f'[{self.seq}] @recv({buffer_size}), waiting message...')
 
+        # If the buffer contains data, return these first
+        if self.recv_buffer:
+            data_buffered = self.recv_buffer[:buffer_size]
+            self.recv_buffer = self.recv_buffer[buffer_size:]
+            return data_buffered
+
         while True:
             # Wait for data
             try:
-                recv_segment, recv_address = self._wait_message(
+                recv_segment, recv_address = self._wait_segment(
                     f_condition=lambda sock, rseg: True,
                     f_update_seq=lambda sock, rseg: sock.seq
                 )
@@ -223,7 +233,12 @@ class SocketTCP:
             tcp_segment = SegmentTCP(False, True, False, self.seq, '')
             self._send_segment(tcp_segment)
 
-            return data_bytes
+            # Store received bytes, only return up to buffer_size, thes remainder stays in the buffer
+            self.recv_buffer += data_bytes
+            data_out = self.recv_buffer[:buffer_size]
+            self.recv_buffer = self.recv_buffer[buffer_size:]
+
+            return data_out
 
     # Terminates the socket
     # Handles the B-Host-side FIN/ACK package exchange
@@ -244,7 +259,7 @@ class SocketTCP:
         self._log(f'[{self.seq}] @close, wait FIN+ACK...')
         while True:
             try:
-                self._wait_message(
+                self._wait_segment(
                     f_condition=lambda sock, rseg: rseg.ack and rseg.fin and rseg.seq == sock.seq,
                     f_update_seq=lambda sock, rseg: sock.seq
                 )
@@ -284,7 +299,7 @@ class SocketTCP:
         # Wait FIN
         while True:
             try:
-                recv_segment, _ = self._wait_message(
+                recv_segment, _ = self._wait_segment(
                     f_condition=lambda sock, rseg: rseg.fin,
                     f_update_seq=lambda sock, rseg: rseg.seq
                 )
@@ -303,7 +318,7 @@ class SocketTCP:
         self._log(f'[{self.seq}] @recv_close, wait final ACK...')
         while True:
             try:
-                self._wait_message(
+                self._wait_segment(
                     f_condition=lambda sock, rseg: rseg.ack and rseg.seq == sock.seq,
                     f_update_seq=lambda sock, rseg: sock.seq
                 )
@@ -326,7 +341,7 @@ class SocketTCP:
         self._log(f'[{self.seq}] @recv_close, connection closed')
 
     # Helper private method to send a tcp segment
-    def _send_segment(self, tcp_segment):
+    def _send_segment(self, tcp_segment) -> None:
         message_bytes = SegmentTCP.create_segment(tcp_segment)
         self._log(f'[{self.seq}] @_send_segment, sent msg: {tcp_segment}')
         self.socket.sendto(message_bytes, (self.destination_addr, self.destination_port))
@@ -336,7 +351,10 @@ class SocketTCP:
     #               Condition for when the received message is accepted
     # f_update_seq: lambda function (self, received_segment)
     #               Assigns the new seq number to the caller
-    def _wait_message(self, f_condition, f_update_seq):
+    def _wait_segment(self, 
+                      f_condition: Callable[['SocketTCP', SegmentTCP], bool], 
+                      f_update_seq: Callable[['SocketTCP', SegmentTCP], int]
+                      ) -> tuple[SegmentTCP, tuple[str, int]]:
         is_waiting = True
         while is_waiting:
             try:
@@ -368,5 +386,6 @@ class SocketTCP:
         return recv_segment, recv_address
 
     # Helper debugging function
-    def _log(self, message):
-        print(message)
+    def _log(self, message: str) -> None:
+        if self.debug_mode:
+            print(message)
