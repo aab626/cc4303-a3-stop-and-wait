@@ -343,6 +343,7 @@ class SocketTCP:
                 recv_message, recv_address = self.socket.recvfrom(UDP_BUFFER_SIZE)
             except socket.timeout as exc:
                 raise exc
+            
             recv_segment = SegmentTCP.parse_segment(recv_message)
             self._log(f'[{self.seq}] @_wait_message, recv: {recv_segment}')
             
@@ -355,9 +356,14 @@ class SocketTCP:
                 if recv_segment.syn and recv_segment.ack:
                     ack_seq = recv_segment.seq + 1
                     ack_segment = SegmentTCP(False, True, False, ack_seq, '')
-                    self._log(
-                        f'[{self.seq}] @_wait_message, duplicate SYN+ACK detected, re-ACKing with seq {ack_seq}')
+                    self._log(f'[{self.seq}] @_wait_message, duplicate SYN+ACK detected, resending ACK with seq={ack_seq}')
                     self._send_segment(ack_segment)
+                else:
+                    if self.seq is not None and recv_segment.seq <= self.seq:
+                        ack_segment = SegmentTCP(False, True, False, ack_seq, '')
+                        self._log(f'[{self.seq}] @_wait_message, duplicate segment seq={recv_segment.seq}<={self.seq}, resending ACK')
+                        self._send_segment(ack_segment)
+
 
         return recv_segment, recv_address
 
